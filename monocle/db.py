@@ -27,7 +27,8 @@ _optional = {
     'RARE_IDS': [],
     'REPORT_SINCE': None,
     'BOUNDARIES': None,
-    'STAY_WITHIN_MAP': True
+    'STAY_WITHIN_MAP': True,
+    'MORE_POINTS': True
 }
 for setting_name, default in _optional.items():
     if not hasattr(config, setting_name):
@@ -412,7 +413,8 @@ def get_spawns(session):
 
         despawn_times[spawn.spawn_id] = spawn.despawn_time
         spawns_dict[spawn.spawn_id] = (point, spawn_time)
-        known_points.add(point)
+        if config.MORE_POINTS:
+            known_points.add(point)
 
     spawns = OrderedDict(sorted(spawns_dict.items(), key=lambda k: k[1][1]))
     return spawns, despawn_times, mysteries, altitudes, known_points

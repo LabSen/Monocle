@@ -814,6 +814,18 @@ class Worker:
                 else:
                     shared.DB.add(self.normalize_gym(fort))
 
+            if config.MORE_POINTS or bootstrap:
+                for point in map_cell.get('spawn_points', []):
+                    points_seen += 1
+                    try:
+                        p = (point['latitude'], point['longitude'])
+                        if shared.SPAWNS.have_point(p) or not Bounds.contain(p):
+                            continue
+                        shared.SPAWNS.add_cell_point(p)
+                    except (KeyError, TypeError):
+                        self.logger.warning('Spawn point exception ignored. {}'.format(point))
+                        pass
+
         if config.INCUBATE_EGGS and len(self.unused_incubators) > 0 and len(self.eggs) > 0:
             await self.incubate_eggs()
 
@@ -830,7 +842,7 @@ class Worker:
                 self.error_code = '0 SEEN'
             else:
                 self.error_code = ','
-            if self.empty_visits > 3 and not bootstrap:
+            if self.empty_visits > 3:
                 reason = '{} empty visits'.format(self.empty_visits)
                 await self.swap_account(reason)
             if CIRCUIT_FAILURES:

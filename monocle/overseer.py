@@ -14,7 +14,6 @@ from pogo_async.hash_server import HashServer
 from sqlalchemy.exc import OperationalError
 
 import time
-import math
 
 try:
     import _thread
@@ -22,7 +21,7 @@ except ImportError:
     import _dummy_thread as _thread
 
 from .db import SIGHTING_CACHE, FORT_CACHE
-from .utils import get_current_hour, dump_pickle, get_start_coords, get_bootstrap_points, get_hex_points
+from .utils import get_current_hour, dump_pickle, get_start_coords, get_bootstrap_points
 
 from . import config
 from . import shared
@@ -69,8 +68,6 @@ class Overseer:
         self.skipped = 0
         self.visits = 0
         self.mysteries = deque()
-        self.basescan_points = get_hex_points()
-        self.last_update = time.time()
         self.coroutine_semaphore = Semaphore(self.count)
         self.redundant = 0
         self.all_seen = False
@@ -171,7 +168,6 @@ class Overseer:
             self.logger.exception('A wild exception appeared during exit.')
         finally:
             shared.DB.queue.put({'type': 'kill'})
-            dump_pickle('basescan', self.basescan_points)
             print('Done.                                          ')
 
     @staticmethod
@@ -266,10 +262,10 @@ class Overseer:
 
         output = [
             'Monocle running for {}'.format(running_for),
-            'Known spawns: {}, unknown: {}, base: {}'.format(
+            'Known spawns: {}, unknown: {}, more: {}'.format(
                 len(shared.SPAWNS),
                 shared.SPAWNS.mysteries_count,
-                sum(len(x) for x in self.basescan_points.values())),
+                shared.SPAWNS.cells_count),
             '{} workers, {} threads, {} coroutines'.format(
                 self.count,
                 active_count(),
@@ -366,7 +362,7 @@ class Overseer:
 
     def get_start_point(self):
         smallest_diff = float('inf')
-        now = (time.time() - config.START_AGO) % 3600
+        now = time.time() % 3600
         closest = None
 
         for spawn_id, spawn in shared.SPAWNS.items():
@@ -381,7 +377,6 @@ class Overseer:
     def launch(self, bootstrap, pickle):
         initial = True
         exceptions = 0
-        next_mystery_reload = 0
         while not self.killed:
             if not initial:
                 pickle = False
@@ -408,6 +403,19 @@ class Overseer:
 
             if bootstrap:
                 self.bootstrap()
+
+            while len(shared.SPAWNS) < 10 and not self.killed:
+                try:
+                    mystery_point = list(self.mysteries.popleft())
+                    self.coroutine_semaphore.acquire()
+                    asyncio.run_coroutine_threadsafe(
+                        self.try_point(mystery_point), loop=self.loop
+                    )
+                except IndexError:
+                    self.mysteries = shared.SPAWNS.get_mysteries()
+                    if not self.mysteries:
+                        config.MORE_POINTS = True
+                        break
 
             current_hour = get_current_hour()
             if shared.SPAWNS.after_last():
@@ -453,13 +461,10 @@ class Overseer:
                                 self.try_point(mystery_point), loop=self.loop
                             )
                         except IndexError:
-                            if next_mystery_reload < time.time():
-                                self.mysteries = shared.SPAWNS.get_mysteries()
-                                next_mystery_reload = time.time() + 30
-                                time_diff = time.time() - spawn_time
-                                if self.mysteries:
-                                    continue
-                            self.basescan_point()
+                            self.mysteries = shared.SPAWNS.get_mysteries()
+                            time_diff = time.time() - spawn_time
+                            if not self.mysteries:
+                                break
                         time_diff = time.time() - spawn_time
 
                     if time_diff > 5 and spawn_id in SIGHTING_CACHE.store:
@@ -484,36 +489,28 @@ class Overseer:
                         self.logger.exception('Error occured in launcher loop.')
 
     def bootstrap(self):
-        while True:
-            now = datetime.now()
-            section = math.floor(now.minute/15)
-            if not self.basescan_points.get(section):
-                s = (14 - now.minute % 15) * 60 + (61 - now.second)
-                self.logger.warning("no hex points left in this time period sleeping {}s".format(s))
-                time.sleep(s)
-                continue
+        try:
+            self.bootstrap_one()
+            time.sleep(1)
+            while self.coroutine_semaphore._value < (self.count / 2) and not self.killed:
+                time.sleep(2)
+        except Exception:
+            self.logger.exception('An exception occurred during bootstrap phase 1.')
 
-            self.basescan_point()
+        try:
+            self.logger.warning('Starting bootstrap phase 2.')
+            self.bootstrap_two()
+            time.sleep(1)
+            self.logger.warning('Finished bootstrapping.')
+        except Exception:
+            self.logger.exception('An exception occurred during bootstrap phase 2.')
 
-            if not self.basescan_points or self.killed:
-                break
-            time.sleep(0.1)
-
-        dump_pickle('basescan', self.basescan_points)
-
-    def basescan_point(self):
-        async def basescan_try(point, queue, next_queue, until):
+    def bootstrap_one(self):
+        async def visit_release(worker, point):
             try:
-                worker = await self.best_worker(point)
-                if worker and await worker.bootstrap_visit(point):
-                    if until < time.time():
-                        queue.append(point)
-                        if point not in next_queue:
-                            return
-                        next_queue.remove(point)
+                await worker.busy.acquire()
+                if await worker.bootstrap_visit(point):
                     self.visits += 1
-                else:
-                    queue.append(point)
             finally:
                 try:
                     worker.busy.release()
@@ -521,29 +518,31 @@ class Overseer:
                     pass
                 self.coroutine_semaphore.release()
 
-        now = datetime.now()
-        section = math.floor(now.minute/15)
-        until = time.time() + (14 - now.minute % 15) * 60 + (60 - now.second)
+        for worker in self.workers:
+            number = worker.worker_no
+            worker.bootstrap = True
+            point = list(get_start_coords(number))
+            time.sleep(.25)
+            self.coroutine_semaphore.acquire()
+            asyncio.run_coroutine_threadsafe(visit_release(worker, point),
+                                             loop=self.loop)
 
-        if self.last_update <= time.time():
-            self.logger.warning("Base scan status")
-            for i, s in self.basescan_points.items():
-                self.logger.warning("   {}-{}: {}".format(i*15, i*15+14, len(s)))
-            self.last_update = time.time()+300
-            dump_pickle('basescan', self.basescan_points)
+    def bootstrap_two(self):
+        async def bootstrap_try(point):
+            try:
+                worker = await self.best_worker(point, must_visit=True)
+                if await worker.bootstrap_visit(point):
+                    self.visits += 1
+            finally:
+                try:
+                    worker.busy.release()
+                except (NameError, AttributeError, RuntimeError):
+                    pass
+                self.coroutine_semaphore.release()
 
-        if not self.basescan_points.get(section):
-            time.sleep(0.5)
-            return
-
-        point = self.basescan_points[section].pop()
-        self.coroutine_semaphore.acquire()
-        next_queue = self.basescan_points.get((section+1)%4, [])
-        asyncio.run_coroutine_threadsafe(
-            basescan_try(point, self.basescan_points[section], next_queue, until), loop=self.loop)
-
-        if len(self.basescan_points[section]) == 0:
-            del self.basescan_points[section]
+        for point in get_bootstrap_points():
+            self.coroutine_semaphore.acquire()
+            asyncio.run_coroutine_threadsafe(bootstrap_try(point), loop=self.loop)
 
     async def try_point(self, point, spawn_time=None):
         try:

@@ -41,7 +41,8 @@ var overlays = {
     Pokestops: L.layerGroup([]),
     Workers: L.layerGroup([]),
     Spawns: L.layerGroup([]),
-    ScanArea: L.layerGroup([])
+    ScanArea: L.layerGroup([]),
+    ScanPoints: L.layerGroup([])
 };
 
 function unsetHidden (event) {
@@ -216,6 +217,21 @@ function addScanAreaToMap (data, map) {
             L.polyline(item.coords).addTo(overlays.ScanArea);
         } else if (item.type === 'scanblacklist'){
             L.polyline(item.coords, {'color':'red'}).addTo(overlays.ScanArea);
+        } else if (item.type === 'basepoint') {
+            var circle = L.circle([item.point[0], item.point[1]], 70, {weight: 2});
+            if (item.count == 4) {
+                circle.setStyle({color: '#f03'});
+            }
+            else if (item.count == 3) {
+                circle.setStyle({color: '#700'});
+            }
+            else if (item.count == 2) {
+                circle.setStyle({color: '#000'});
+            }
+            else {
+                circle.setStyle({color: '#060'});
+            }
+            circle.addTo(overlays.ScanPoints);
         }
     });
 }
@@ -297,6 +313,16 @@ function getWorkers() {
     });
 }
 
+function getScanPoints() {
+    new Promise(function (resolve, reject) {
+        $.get('/basescan_points', function (response) {
+            resolve(response);
+        });
+    }).then(function (data) {
+        addMarkersToMap(data, map);
+    });
+}
+
 var map = L.map('main-map', {preferCanvas: true}).setView(_MapCoords, 13);
 
 overlays.Pokemon.addTo(map);
@@ -327,4 +353,5 @@ map.whenReady(function () {
     getPokemon();
     setInterval(getPokemon, 30000);
     setInterval(getGyms, 110000)
+    setInterval(getScanPoints, 150000);
 });

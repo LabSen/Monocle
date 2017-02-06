@@ -20,7 +20,6 @@ class Spawns:
         self.spawns = OrderedDict()
         self.despawn_times = {}
         self.mysteries = set()
-        self.cell_points = set()
         self.altitudes = {}
         self.known_points = set()
 
@@ -57,7 +56,7 @@ class Spawns:
         return self.spawns.items()
 
     def get_mysteries(self):
-        mysteries = deque(self.mysteries | self.cell_points)
+        mysteries = deque(self.mysteries)
         shuffle(mysteries)
         return mysteries
 
@@ -79,23 +78,15 @@ class Spawns:
 
     def add_mystery(self, point):
         self.mysteries.add(point)
-        self.cell_points.discard(point)
-
-    def add_cell_point(self, point):
-        self.cell_points.add(point)
 
     def remove_mystery(self, point):
         self.mysteries.discard(point)
-        self.cell_points.discard(point)
 
     def get_despawn_seconds(self, spawn_id):
         return self.despawn_times.get(spawn_id)
 
     def db_has(self, point):
         return point in chain(self.known_points, self.mysteries)
-
-    def have_point(self, point):
-        return point in chain(self.cell_points, self.known_points, self.mysteries)
 
     def get_despawn_time(self, spawn_id, seen=None):
         now = seen or time()
@@ -119,15 +110,11 @@ class Spawns:
 
     @property
     def total_length(self):
-        return len(self.despawn_times) + self.mysteries_count + self.cells_count
+        return len(self.despawn_times) + self.mysteries_count
 
     @property
     def mysteries_count(self):
         return len(self.mysteries)
-
-    @property
-    def cells_count(self):
-        return len(self.cell_points)
 
 
 class DatabaseProcessor(Thread):

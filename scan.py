@@ -56,7 +56,7 @@ _optional = {
     'APP_SIMULATION': True,
     'ITEM_LIMITS': None,
     'MAX_RETRIES': 3,
-    'MORE_POINTS': True,
+    'START_AGO': 30,
     'GIVE_UP_KNOWN': 75,
     'GIVE_UP_UNKNOWN': 60,
     'SKIP_SPAWN': 90,

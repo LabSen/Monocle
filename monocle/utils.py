@@ -34,7 +34,7 @@ _optional = {
     'PASS': None,
     'PROVIDER': None,
     'MANAGER_ADDRESS': None,
-    'BOOTSTRAP_RADIUS': 450,
+    'BOOTSTRAP_RADIUS': 70,
     'DIRECTORY': None
 }
 for setting_name, default in _optional.items():
@@ -377,3 +377,18 @@ async def random_sleep(minimum=10, maximum=13, mode=None):
         await sleep(random.triangular(minimum, maximum, mode))
     else:
         await sleep(random.uniform(minimum, maximum))
+
+def get_hex_points():
+    scanpoints = load_pickle('basescan')
+    if scanpoints:
+        return scanpoints
+
+    coords = get_bootstrap_points()
+
+    scanpoints = {}
+    for i in range(4):
+        scanpoints[i] = coords.copy()
+        random.shuffle(scanpoints[i])
+    dump_pickle('basescan', scanpoints)
+
+    return scanpoints

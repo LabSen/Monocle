@@ -111,6 +111,11 @@ def scan_coords():
     return jsonify(get_scan_coords())
 
 
+@app.route('/basescan_points')
+def basescan_points():
+    return jsonify(get_basescan_points())
+
+
 if config.MAP_WORKERS:
     workers = Workers()
 

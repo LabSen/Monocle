@@ -22,7 +22,7 @@ except ImportError:
     def jit(func):
         return func
 
-from . import config, db
+from . import config
 
 _optional = {
     'ALT_RANGE': (300, 400),
@@ -200,33 +200,19 @@ def get_point_altitudes(precision=3):
 
 
 def get_bootstrap_points():
-    if config.BOUNDARIES:
-        from shapely.geometry import mapping
-        points = mapping(config.BOUNDARIES)['coordinates'][0]
-        start_lat = min(points,key=lambda item:item[0])[0]
-        end_lat   = max(points,key=lambda item:item[0])[0]
-        start_lon = min(points,key=lambda item:item[1])[1]
-        end_lon   = max(points,key=lambda item:item[1])[1]
-    else:
-        start_lat = min(config.MAP_START[0], config.MAP_END[0])
-        end_lat   = max(config.MAP_START[0], config.MAP_END[0])
-        start_lon = min(config.MAP_START[1], config.MAP_END[1])
-        end_lon   = max(config.MAP_START[1], config.MAP_END[1])
-
     lat_gain, lon_gain = get_gains(config.BOOTSTRAP_RADIUS)
     coords = []
     for map_row, lat in enumerate(
-        float_range(start_lat, end_lat, lat_gain)
+        float_range(config.MAP_START[0], config.MAP_END[0], lat_gain)
     ):
-        row_start_lon = start_lon
+        row_start_lon = config.MAP_START[1]
         odd = map_row % 2 != 0
         if odd:
             row_start_lon -= 0.5 * lon_gain
         for map_col, lon in enumerate(
-            float_range(row_start_lon, end_lon, lon_gain)
+            float_range(row_start_lon, config.MAP_END[1], lon_gain)
         ):
-            if db.Bounds.contain((lat,lon)):
-                coords.append([lat,lon])
+            coords.append([lat,lon])
     random.shuffle(coords)
     return coords
 

@@ -1,6 +1,6 @@
 from queue import Queue
 from collections import deque, OrderedDict
-from logging import getLogger
+from logging import getLogger, LoggerAdapter
 from threading import Thread
 from sqlalchemy.exc import DBAPIError
 from time import time
@@ -135,9 +135,8 @@ class DatabaseProcessor(Thread):
     def __init__(self):
         super().__init__()
         self.queue = Queue()
-        self.logger = getLogger('dbprocessor')
+        self.log = get_logger('dbprocessor')
         self.running = True
-        self._clean_cache = False
         self.count = 0
         self._commit = False
 
@@ -151,18 +150,6 @@ class DatabaseProcessor(Thread):
         session = db.Session()
 
         while self.running or not self.queue.empty():
-            if self._clean_cache:
-                try:
-                    db.SIGHTING_CACHE.clean_expired()
-                except Exception:
-                    self.logger.exception('Failed to clean sightings cache.')
-                else:
-                    self._clean_cache = False
-                try:
-                    db.MYSTERY_CACHE.clean_expired(session)
-                except Exception:
-                    session.rollback()
-                    self.logger.exception('Failed to clean mystery cache.')
             try:
                 item = self.queue.get()
 
@@ -178,25 +165,19 @@ class DatabaseProcessor(Thread):
                     db.add_fort_sighting(session, item)
                 elif item['type'] == 'pokestop':
                     db.add_pokestop(session, item)
+                elif item['type'] == 'mystery-update':
+                    db.update_mystery(session, item)
                 elif item['type'] == 'kill':
                     break
-                self.logger.debug('Item saved to db')
+                self.log.debug('Item saved to db')
                 if self._commit:
                     session.commit()
                     self._commit = False
-            except DBAPIError as e:
+            except Exception as e:
                 session.rollback()
-                self.logger.exception('A wild DB exception appeared!')
-            except Exception:
-                session.rollback()
-                self.logger.exception('A wild exception appeared!')
+                self.log.exception('A wild {} appeared in the DB processor!', e.__class__.__name__)
 
-        try:
-            db.MYSTERY_CACHE.clean_expired(session)
-            session.commit()
-        except DBAPIError:
-            session.rollback()
-            self.logger.exception('A wild DB exception appeared!')
+        db.MYSTERY_CACHE.update_db(session)
         session.close()
 
     def clean_cache(self):
@@ -206,5 +187,47 @@ class DatabaseProcessor(Thread):
         self._commit = True
 
 
+class Message:
+    def __init__(self, fmt, args):
+        self.fmt = fmt
+        self.args = args
+
+    def __str__(self):
+        return self.fmt.format(*self.args)
+
+
+class StyleAdapter(LoggerAdapter):
+    def __init__(self, logger, extra=None):
+        super(StyleAdapter, self).__init__(logger, extra or {})
+
+    def log(self, level, msg, *args, **kwargs):
+        if self.isEnabledFor(level):
+            msg, kwargs = self.process(msg, kwargs)
+            self.logger._log(level, Message(msg, args), (), **kwargs)
+
+
+def get_logger(name=None):
+    return StyleAdapter(getLogger(name))
+
+
+class Scheduler:
+    def __init__(self):
+        self.loop = asyncio.get_event_loop()
+
+    def call_later(self, delay, cb, *args):
+        """Thread-safe wrapper for call_later"""
+        try:
+            self.loop.call_soon_threadsafe(self.loop.call_later, delay, cb, *args)
+        except RuntimeError:
+            if self.loop.is_closed():
+                return
+            raise
+
+    def call_at(self, when, cb, *args):
+        """Run call back at the unix time given"""
+        delay = when - time()
+        self.call_later(delay, cb, *args)
+
 SPAWNS = Spawns()
 DB = DatabaseProcessor()
+SCHED = Scheduler()

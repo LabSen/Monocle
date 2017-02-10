@@ -142,13 +142,20 @@ class SightingCache(object):
     """Simple cache for storing actual sightings
 
     It's used in order not to make as many queries to the database.
-    It's also capable of purging old entries.
+    It schedules sightings to be removed as soon as they expire.
     """
     def __init__(self):
         self.store = {}
 
     def add(self, sighting):
         self.store[sighting['spawn_id']] = sighting['expire_timestamp']
+        shared.SCHED.call_at(sighting['expire_timestamp'], self.remove, sighting['spawn_id'])
+
+    def remove(self, spawn_id):
+        try:
+            del self.store[spawn_id]
+        except KeyError:
+            pass
 
     def __contains__(self, raw_sighting):
         try:
@@ -161,26 +168,20 @@ class SightingCache(object):
         )
         return within_range
 
-    def clean_expired(self):
-        to_remove = []
-        for key, timestamp in self.store.items():
-            if time.time() > timestamp:
-                to_remove.append(key)
-        for key in to_remove:
-            del self.store[key]
-
 
 class MysteryCache(object):
     """Simple cache for storing Pokemon with unknown expiration times
 
     It's used in order not to make as many queries to the database.
-    It's also capable of purging old entries.
+    It schedules sightings to be removed an hour after being seen.
     """
     def __init__(self):
         self.store = {}
 
     def add(self, sighting):
+        key = combine_key(sighting)
         self.store[combine_key(sighting)] = [sighting['seen']] * 2
+        shared.SCHED.call_at(sighting['seen'] + 3510, self.remove, key)
 
     def __contains__(self, raw_sighting):
         key = combine_key(raw_sighting)
@@ -193,31 +194,36 @@ class MysteryCache(object):
             self.store[key][1] = new_time
         return True
 
-    def clean_expired(self, session):
-        to_remove = []
+    def remove(self, key):
+        first, last = self.store[key]
+        del self.store[key]
+        if last != first:
+            encounter_id, spawn_id = key
+            shared.DB.add({
+                'type': 'mystery-update',
+                'spawn': spawn_id,
+                'encounter': encounter_id,
+                'first': first,
+                'last': last
+            })
+
+    def update_db(self, session):
         for key, times in self.store.items():
             first, last = times
-            if first < time.time() - 3600:
-                to_remove.append(key)
-                if last == first:
-                    continue
+            if last != first:
                 encounter_id, spawn_id = key
-                encounter = session.query(Mystery) \
-                            .filter(Mystery.spawn_id == spawn_id) \
-                            .filter(Mystery.encounter_id == encounter_id) \
-                            .first()
-                if not encounter:
-                    continue
-                hour = encounter.first_seen - (encounter.first_seen % 3600)
-                encounter.last_seconds = last - hour
-                encounter.seen_range = last - first
-        if to_remove:
-            try:
-                session.commit()
-            except DBAPIError:
-                session.rollback()
-        for key in to_remove:
-            del self.store[key]
+                mystery = {
+                    'spawn': spawn_id,
+                    'encounter': encounter_id,
+                    'first': first,
+                    'last': last
+                }
+                try:
+                    update_mystery(session, mystery)
+                except Exception:
+                    session.rollback()
+                else:
+                    session.commit()
 
 
 class FortCache(object):
@@ -621,6 +627,18 @@ def add_pokestop(session, raw_pokestop):
     )
     session.add(pokestop)
     FORT_CACHE.add(raw_pokestop)
+
+
+def update_mystery(session, mystery):
+    encounter = session.query(Mystery) \
+                .filter(Mystery.spawn_id == mystery['spawn']) \
+                .filter(Mystery.encounter_id == mystery['encounter']) \
+                .first()
+    if not encounter:
+        return
+    hour = encounter.first_seen - (encounter.first_seen % 3600)
+    encounter.last_seconds = mystery['last'] - hour
+    encounter.seen_range = mystery['last'] - mystery['first']
 
 
 def get_sightings(session):

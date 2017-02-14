@@ -207,23 +207,8 @@ class MysteryCache(object):
                 'last': last
             })
 
-    def update_db(self, session):
-        for key, times in self.store.items():
-            first, last = times
-            if last != first:
-                encounter_id, spawn_id = key
-                mystery = {
-                    'spawn': spawn_id,
-                    'encounter': encounter_id,
-                    'first': first,
-                    'last': last
-                }
-                try:
-                    update_mystery(session, mystery)
-                except Exception:
-                    session.rollback()
-                else:
-                    session.commit()
+    def items(self):
+        return self.store.items()
 
 
 class FortCache(object):
@@ -235,24 +220,15 @@ class FortCache(object):
         if sighting['type'] == 'pokestop':
             self.store[sighting['external_id']] = True
         else:
-            self.store[sighting['external_id']] = (
-                sighting['team'],
-                sighting['prestige'],
-                sighting['guard_pokemon_id'],
-            )
+            self.store[sighting['external_id']] = sighting['last_modified']
 
     def __contains__(self, sighting):
-        params = self.store.get(sighting['external_id'])
-        if not params:
+        existing = self.store.get(sighting['external_id'])
+        if not existing:
             return False
-        if sighting['type'] == 'pokestop':
+        if existing is True:
             return True
-        is_the_same = (
-            params[0] == sighting['team'] and
-            params[1] == sighting['prestige'] and
-            params[2] == sighting['guard_pokemon_id']
-        )
-        return is_the_same
+        return existing == sighting['last_modified']
 
     def pickle(self):
         utils.dump_pickle('forts', self.store)
@@ -334,8 +310,8 @@ class Fort(Base):
 
     id = Column(Integer, primary_key=True)
     external_id = Column(String(35), unique=True)
-    lat = Column(Float, index=True)
-    lon = Column(Float, index=True)
+    lat = Column(Float)
+    lon = Column(Float)
 
     sightings = relationship(
         'FortSighting',
@@ -349,7 +325,7 @@ class FortSighting(Base):
 
     id = Column(Integer, primary_key=True)
     fort_id = Column(Integer, ForeignKey('forts.id'))
-    last_modified = Column(Integer)
+    last_modified = Column(Integer, index=True)
     team = Column(TINY_TYPE)
     prestige = Column(MEDIUM_TYPE)
     guard_pokemon_id = Column(TINY_TYPE)
@@ -397,7 +373,7 @@ def get_spawns(session):
     altitudes = {}
     known_points = set()
     for spawn in spawns:
-        point = (spawn.lat, spawn.lon)
+        point = spawn.lat, spawn.lon
 
         # skip if point is not within boundaries (if applicable)
         if not Bounds.contain(point):
@@ -592,9 +568,7 @@ def add_fort_sighting(session, raw_fort):
     if fort.id:
         existing = session.query(exists().where(and_(
             FortSighting.fort_id == fort.id,
-            FortSighting.team == raw_fort['team'],
-            FortSighting.prestige == raw_fort['prestige'],
-            FortSighting.guard_pokemon_id == raw_fort['guard_pokemon_id']
+            FortSighting.last_modified == raw_fort['last_modified']
         ))).scalar()
         if existing:
             # Why is it not in the cache? It should be there!
